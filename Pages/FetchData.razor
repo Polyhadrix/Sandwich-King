@@ -1,0 +1,355 @@
+﻿@page "/fetchdata"
+@using Sandwich_King.Data
+@using Sandwich_King_DB.Data.EndToEnd
+@using Syncfusion.Blazor.Buttons
+@using Syncfusion.Blazor.DropDowns;
+@using Syncfusion.Blazor.Notifications
+@using System.ComponentModel.DataAnnotations
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@*
+    Using OwningComponentBase ensures that the service and related services
+    that share its scope are disposed with the component.
+    Otherwise DbContext in imageService will live for the life of the
+    connection, which may be problematic if clients stay
+    connected for a long time.
+    We access ImageService using @Service
+*@
+@inherits OwningComponentBase<ImageService>
+<h1>Your Images</h1>
+<!-- AuthorizeView allows us to only show sections of the page -->
+<!-- based on the security on the current user -->
+<AuthorizeView>
+    <!-- Show this section if the user is logged in -->
+    <Authorized>
+        <h4>Hello, @context.User.Identity?.Name!</h4>
+        @if (images == null)
+        {
+            <!-- Show this if the current user has no data... yet... -->
+            <p><em>Loading...</em></p>
+        }
+        else
+        {
+            <div class="col-lg-12 control-section toast-default-section">
+                <SfToast ID="toast_default" @ref="ToastObj" CssClass="e-toast-success" Content="Your sandwich uploaded successfully." Timeout="5000">
+                    <ToastEvents OnOpen="RefreshImages"></ToastEvents>
+                    <ToastPosition X="Center"></ToastPosition>
+                </SfToast>
+            </div>
+            @*<style>
+                #toast_default .e-meeting::before {
+                content: "\e705";
+                font-size: 17px;
+            }
+            </style>*@
+
+            <!-- Show the images for the current user -->
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>File Name</th>
+                        <th>Hashtags</th>
+                        <th>Date</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var image in images)
+                    {
+                        <tr>
+                            <td>@image.ImageFilepath</td>
+                            <td>@image.Tags</td>
+                            <td>@image.Date?.ToLongDateString()</td>
+                            <td>
+                                <!-- Edit the current image -->
+                                <button class="btn btn-primary"
+                                @onclick="(() =>{Editimage(image); InEditMode=true;})">
+                                    Edit
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <p>
+                <!-- Add a new image -->
+                <button class="btn btn-success"
+                    @onclick="AddNewimage">
+                    Add New image
+                </button>
+            </p>
+            @if (ShowPopup)
+            {
+                <!-- This is the popup to create or edit a image -->
+                <div class="modal" tabindex="-1" style="display:block;position:absolute;top:50px" role="dialog">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                @if(InEditMode)
+                                {
+                                    <h3 class="modal-title">Edit image</h3>
+                                }
+                                else
+                                {
+                                    <h3 class="modal-title">New image</h3>
+                                }
+                                <!-- Button to close the popup -->
+                                <button type="button" class="close"
+                                @onclick="ClosePopup">
+                                    <span aria-hidden="true">X</span>
+                                </button>
+                            </div>
+                            <!-- Edit form for the current image -->
+                            <div class="modal-body">
+
+                                <SfMultiSelect @ref="sfMultiSelect" TItem="MultiSelectExample" TValue="string[]" Placeholder="hashtag" @bind-Value="@HashtagValues" AllowCustomValue=true DataSource="@examples">
+                                    <MultiSelectEvents TItem="MultiSelectExample" TValue="string[]" OnValueSelect="@ValueSelectedHandler" ValueChange="@ValueChangeHandler"></MultiSelectEvents>
+                                    <MultiSelectFieldSettings Text="text" Value="text"></MultiSelectFieldSettings> 
+                                </SfMultiSelect>
+
+                                <SfUploader @ref="sfUploader" Enabled="@FileUploadEnable" AutoUpload="false" AllowMultiple="false" AllowedExtensions=".png, .jpg, .jfif, .gif, .heic, .heif, .svg">
+                                    <UploaderEvents ValueChange="OnChange"></UploaderEvents>
+                                </SfUploader>
+                                <br />
+                                @if(InEditMode)
+                                {
+                                    <!-- Button to save the image -->
+                                    <button class="btn btn-success"
+                                    @onclick="Saveimage">
+                                        Save
+                                    </button>
+                                }
+                                
+                                <!-- Only show delete button if not a new record -->
+                                @if (string.Compare(ObjImage.ImageId, "00000000-0000-0000-0000-000000000000") > 0)
+                                {
+                                    <!-- Button to delete the image -->
+                                    <button class="btn btn-danger"
+                                @onclick="Deleteimage">
+                                        Delete
+                                    </button>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        }
+    </Authorized>
+    <!-- Show this section if the user is not logged in -->
+    <NotAuthorized>
+        <p>You're not signed in.</p>
+    </NotAuthorized>
+</AuthorizeView>
+
+@code
+{
+    SfToast ToastObj;
+    SfUploader sfUploader;
+    SfMultiSelect<string[],MultiSelectExample> sfMultiSelect;
+    bool ShowSuccessAlert = false;
+    bool FileUploadEnable = false;
+    public string[] HashtagValues { get; set; } = new string[] { };
+    string NewName = "";
+    string HashtagValue = "";
+    Image ObjImage = new Image();
+    bool ShowPopup = false;
+    bool InEditMode = false;
+
+    private async Task ShowOnClick()
+    {
+        await this.ToastObj.ShowAsync();
+        await OnInitializedAsync();
+        //await this.RefreshImages();
+    }
+    private async Task HideOnClick()
+    {
+        await this.ToastObj.HideAsync("All");
+    }
+
+    private List<MultiSelectExample> examples = new List<MultiSelectExample>() {
+        new MultiSelectExample(){ id= "Sandwich1", text= "Croissant" },
+        new MultiSelectExample(){ id= "Sandwich2", text= "BLT" },
+        new MultiSelectExample(){ id= "Sandwich3", text= "Chipotle" },
+        new MultiSelectExample(){ id= "Sandwich4", text= "Burger" },
+     };
+
+    public class MultiSelectExample
+    {
+        public string id { get; set; }
+        public string text { get; set; }
+    }
+
+    private void OnChange(UploadChangeEventArgs args)
+    {
+        foreach (var file in args.Files)
+        {
+            string originalFileName = file.FileInfo.Name;
+            var fileExtension = file.FileInfo.Name.Substring(file.FileInfo.Name.LastIndexOf('.'));
+            var newName = Guid.NewGuid().ToString() + fileExtension;
+            var path = "wwwroot\\Images\\" + newName;
+            FileStream filestream = new FileStream(path, FileMode.Create, FileAccess.Write);
+            file.Stream.WriteTo(filestream);
+            filestream.Close();
+            file.Stream.Close();
+
+            Image objNewImage = new Image();
+            objNewImage.ImageId = path;
+            objNewImage.UserName = UserIdentityName;
+            objNewImage.ImageFilepath = originalFileName;
+            objNewImage.Date = System.DateTime.Now;
+            objNewImage.Tags = HashtagValue;
+            // Save the result
+            var result = @Service.CreateImageAsync(objNewImage);
+            ShowPopup = false;
+            FileUploadEnable = false;
+            sfUploader.Enabled = FileUploadEnable;
+            sfMultiSelect.ClearAsync();
+            ToastObj.ShowAsync();
+            Console.WriteLine(ShowSuccessAlert);
+        }
+    }
+
+    private void ValueChangeHandler(MultiSelectChangeEventArgs<string[]> args)
+    {
+        string output = "";
+        if(args.Value != null)
+        {
+            FileUploadEnable = true;
+            sfUploader.Enabled = FileUploadEnable;
+
+            foreach (var value in args.Value)
+            {
+                output += ("#" + value.ToString());
+            }
+            //Console.WriteLine(output);
+            HashtagValue = output;
+        }
+        else
+        {
+            FileUploadEnable = false;
+            sfUploader.Enabled = FileUploadEnable;
+        }
+    }
+
+    private void ValueSelectedHandler(SelectEventArgs<MultiSelectExample> args)
+    {
+        string output = "";
+        if (sfMultiSelect.Value != null)
+        {
+            FileUploadEnable = true;
+            sfUploader.Enabled = FileUploadEnable;
+
+            foreach (var value in sfMultiSelect.Value)
+            {
+                output += ("#" + value.ToString());
+            }
+            //Console.WriteLine(output);
+            HashtagValue = output;
+        }
+        else
+        {
+            FileUploadEnable = false;
+            sfUploader.Enabled = FileUploadEnable;
+        }
+        
+        
+    }
+
+    // AuthenticationState is available as a CascadingParameter
+    [CascadingParameter]
+    private Task<AuthenticationState>? authenticationStateTask { get; set; }
+    List<Image> images = new List<Image>();
+    private string UserIdentityName = "";
+    protected override async Task OnInitializedAsync()
+    {
+        // Get the current user
+        if (authenticationStateTask != null)
+        {
+            var user = (await authenticationStateTask).User;
+            if (user.Identity != null)
+            {
+                UserIdentityName = user.Identity.Name ?? "";
+            }
+        }
+        // Get the images for the current user
+        // We access ImageService using @Service
+        images = await @Service.GetImageAsync(UserIdentityName);
+    }
+
+    async Task RefreshImages()
+    {
+        images = await @Service.GetImageAsync(UserIdentityName);
+        //await sfMultiSelect.ClearAsync();
+        //Console.WriteLine("ClearAsync called");
+        //await sfUploader.ClearAllAsync();
+        //Console.WriteLine("ClearAllAsync called");
+        //Console.WriteLine("Operation completed flawlessly");
+    }
+
+    async Task ClosePopup()
+    {
+        // Close the Popup
+        ShowPopup = false;
+        await sfMultiSelect.ClearAsync();
+        Console.WriteLine("ClearAsync called");
+        await sfUploader.ClearAllAsync();
+        Console.WriteLine("ClearAllAsync called");
+        FileUploadEnable = false;
+        sfUploader.Enabled = FileUploadEnable;
+        Console.WriteLine("canceled");
+    }
+    void AddNewimage()
+    {
+        // Make new image
+        ObjImage = new Image();
+        // Set Id to 0 so we know it is a new record
+        ObjImage.ImageId = "";
+        // Open the Popup
+        ShowPopup = true;
+    }
+    async Task Saveimage()
+    {
+        // Close the Popup
+        ShowPopup = false;
+        // A new image will have the Id set to 0
+        if (ObjImage.ImageId == "0")
+        {
+            // Create new image
+            Image objNewImage = new Image();
+            objNewImage.ImageId = NewName;
+            objNewImage.UserName = UserIdentityName;
+            objNewImage.ImageFilepath = ObjImage.ImageFilepath;
+            objNewImage.Date = System.DateTime.Now;
+            // Save the result
+            var result =
+            @Service.CreateImageAsync(objNewImage);
+        }
+        else
+        {
+            // This is an update
+            var result =
+            @Service.UpdateImageAsync(ObjImage);
+        }
+        // Get the images for the current user
+        images =
+        await @Service.GetImageAsync(UserIdentityName);
+    }
+    void Editimage(Image Image)
+    {
+        // Set the selected image
+        // as the current image
+        ObjImage = Image;
+        // Open the Popup
+        ShowPopup = true;
+    }
+    async Task Deleteimage()
+    {
+        // Close the Popup
+        ShowPopup = false;
+        // Delete the image
+        var result = @Service.DeleteImageAsync(ObjImage);
+        // Get the images for the current user
+        images =
+        await @Service.GetImageAsync(UserIdentityName);
+    }
+}
